@@ -22,7 +22,8 @@ Flippy Bird is an enhanced, browser-based arcade game inspired by the classic Fl
 
 ## 🚀 Live Demo
 
-Play the game here: [https://psyodrz.github.io/floppy-game/](https://psyodrz.github.io/floppy-game/)
+Play the game here:
+(https://psyodrz.github.io/flippy-Floppy/)
 
 ## 🎮 How to Play
 
