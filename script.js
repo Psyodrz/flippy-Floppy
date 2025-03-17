@@ -33,7 +33,8 @@ const yaySound = document.getElementById("yaySound");
 
 let assetsLoaded = false;
 let loadedAssets = 0;
-const totalAssets = 6;
+// Fix: Update totalAssets to match the actual number of assets we're loading (8 images + 7 audio files)
+const totalAssets = 15;
 const birdSkins = {};
 const backgroundThemes = {};
 const pipeStyles = {
@@ -140,6 +141,7 @@ let gameState = {
     jetpackCooldownDuration: 2000, // Duration of jetpack cooldown in ms
     jetpackOriginalGravity: 0.4, // Store original gravity for cooldown phase
     grassAnimation: null,
+    animationFrameId: null,
 };
 
 function resizeCanvas() {
@@ -763,7 +765,26 @@ class Background {
     }
 }
 
-window.addEventListener("resize", resizeCanvas);
+// Mobile device detection
+const isMobileDevice = () => {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+         (window.innerWidth <= 768);
+};
+
+// Improved event listeners for better mobile support
+function addMobileCompatibleEventListener(element, eventTypes, handler) {
+  if (!element) return;
+  
+  const events = Array.isArray(eventTypes) ? eventTypes : [eventTypes];
+  
+  events.forEach(eventType => {
+    element.addEventListener(eventType, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      handler(e);
+    }, { passive: false });
+  });
+}
 
 function resetPhysicsBasedOnDifficulty() {
     switch (gameState.difficulty) {
@@ -846,39 +867,140 @@ function updateScoreDisplay() {
 }
 
 function initializeGame() {
+    console.log("Initializing game...");
+    
+    // Resize canvas first
     resizeCanvas();
+    
+    // Try loading all-time high score if available
+    gameState.allTimeHighScore = loadAllTimeHighScore() || 0;
+    allTimeHighScoreDisplay.innerText = "All-Time Best: " + gameState.allTimeHighScore;
+    
+    // Initialize game elements
     resetGameElements();
-    resetScores();
-    gameState.running = true;
-    gameState.paused = false;
-    gameState.gameOver = false;
-    gameState.lives = gameState.maxLives; // Reset lives
-    gameState.invincibilityTimer = 0;
-    updateLivesDisplay(); // Update the display
-    gameState.grassAnimation = new GrassAnimation(window.innerWidth);
-
-    if (pauseButton) pauseButton.textContent = "Pause";
-    if (settingsButton) settingsButton.disabled = false;
-    if (featurePanel) featurePanel.style.display = 'flex';
-
-    resetPhysicsBasedOnDifficulty();
-    updateScoreDisplay();
     
-    // Set a longer initial delay for the first pipe to appear
-    gameState.pipeSpawnTimer = -1000;
+    // Set up a fallback timeout to ensure game starts even if asset loading fails completely
+    setTimeout(function() {
+        if (loadingScreen.style.display !== 'none') {
+            console.warn("Critical timeout reached - forcing game to start regardless of asset loading status");
+            loadingScreen.style.display = "none";
+            startMenu.style.display = "flex";
+            assetsLoaded = true;
+        }
+    }, 15000); // 15 second absolute maximum wait time
     
-    // Initialize enemy bird spawn timer with a small delay
-    gameState.enemyBirdSpawnTimer = -2000;
+    // Start asset loading process
+    try {
+        loadAssets();
+    } catch (e) {
+        console.error("Error during asset loading:", e);
+        // Even if asset loading fails, we should still allow the game to start
+        setTimeout(() => {
+            if (!assetsLoaded) {
+                console.warn("Asset loading error recovery - forcing game start");
+                completeAssetLoading();
+            }
+        }, 3000);
+    }
 
-    if (startMenu) startMenu.style.display = "none";
-    if (gameOverMenu) gameOverMenu.style.display = "none";
-    if (settingsMenu) settingsMenu.style.display = "none";
-    if (pauseMenu) pauseMenu.style.display = "none";
-    if (newHighScoreDisplay) newHighScoreDisplay.style.display = "none";
-    if (newAllTimeHighScoreDisplay) newAllTimeHighScoreDisplay.style.display = "none";
+    // Add event listeners
+    window.addEventListener("resize", resizeCanvas);
+    
+    // Set up event handlers based on device type
+    setupEventHandlers();
+    
+    // Start game loop
+    gameState.animationFrameId = requestAnimationFrame(gameLoop);
+    
+    console.log("Game initialization complete");
+}
 
-    if (backgroundMusic && isMusicPlaying) {
-        backgroundMusic.play().catch(() => { });
+// Function to set up event handlers
+function setupEventHandlers() {
+    // Improved event handlers for mobile
+    if (isMobileDevice()) {
+        // Touch events for game canvas
+        addMobileCompatibleEventListener(canvas, ['touchstart'], flap);
+        
+        // Fix for menu button interactions on mobile
+        const menuButtons = document.querySelectorAll('.menu button');
+        menuButtons.forEach(button => {
+            // Get the original onclick function from attribute
+            const onclickAttr = button.getAttribute('onclick');
+            const originalOnclick = onclickAttr ? 
+                new Function('event', onclickAttr) : 
+                button.onclick;
+            
+            // Clear the original onclick to avoid duplicate calls
+            button.onclick = null;
+            button.removeAttribute('onclick');
+            
+            // Log button setup for debug
+            console.log(`Setting up button: ${button.textContent} with handler`);
+            
+            // Add our custom mobile-friendly event handlers
+            addMobileCompatibleEventListener(button, ['touchstart', 'click'], (e) => {
+                console.log(`Button pressed: ${button.textContent}`);
+                
+                if (originalOnclick) {
+                    // Call the original function with proper context
+                    originalOnclick.call(button, e);
+                } else if (button.textContent === 'Play Again') {
+                    console.log('Play Again button pressed, calling restartGame()');
+                    restartGame();
+                } else if (button.textContent === 'Main Menu') {
+                    console.log('Main Menu button pressed, calling showStartMenu()');
+                    showStartMenu();
+                } else if (button.textContent === 'Resume Game') {
+                    console.log('Resume Game button pressed, calling togglePause()');
+                    togglePause();
+                }
+            });
+        });
+        
+        // Add specific handlers for game over menu buttons
+        const playAgainButton = document.querySelector('#gameOverMenu button:nth-child(3)');
+        if (playAgainButton) {
+            console.log("Found Play Again button, ensuring it works on mobile");
+            // Add a direct event listener as a backup
+            playAgainButton.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log("Play Again touchstart triggered");
+                restartGame();
+            }, { passive: false });
+        }
+        
+        // Fix for feature panel buttons
+        const featurePanelButtons = document.querySelectorAll('#featurePanel button');
+        featurePanelButtons.forEach(button => {
+            const originalOnclick = button.onclick;
+            button.onclick = null;
+            
+            addMobileCompatibleEventListener(button, ['touchstart', 'click'], (e) => {
+                if (originalOnclick) originalOnclick.call(button, e);
+            });
+        });
+        
+        // Fix for settings menu buttons and selects
+        const settingsMenuInputs = document.querySelectorAll('#settingsMenu button, #settingsMenu select');
+        settingsMenuInputs.forEach(input => {
+            if (input.tagName === 'SELECT') {
+                // Keep original onchange for selects
+                return;
+            }
+            
+            const originalOnclick = input.onclick;
+            input.onclick = null;
+            
+            addMobileCompatibleEventListener(input, ['touchstart', 'click'], (e) => {
+                if (originalOnclick) originalOnclick.call(input, e);
+            });
+        });
+    } else {
+        // Desktop events
+        canvas.addEventListener("click", flap);
+        document.addEventListener("keydown", flap);
     }
 }
 
@@ -1175,25 +1297,104 @@ function drawJetpackParticles(ctx) {
 let lastTime = performance.now();
 
 function startGame() {
+    console.log("Start Game button clicked");
+    console.log("Assets loaded status:", assetsLoaded);
+    
     if (!assetsLoaded) {
-        console.warn("Assets not loaded");
+        console.warn("Assets not loaded yet, waiting...");
+        // Show a loading message
+        alert("Game assets are still loading. Please try again in a moment.");
         return;
     }
+    
+    // Hide start menu
+    startMenu.style.display = "none";
+    
+    // Initialize game objects
     gameState.bird = new Bird(window.innerWidth / 4, window.innerHeight / 2, 50, 36);
     gameState.background = new Background(backgroundImage, 1);
-
+    
+    // Set correct display for UI elements
     if (featurePanel) featurePanel.style.display = 'flex';
     if (settingsButton) settingsButton.style.display = 'block';
-
-    initializeGame();
+    
+    // Initialize game state and set running flag
+    gameState.running = true;
+    gameState.gameOver = false;
+    gameState.paused = false;
+    gameState.frozen = false;
+    
+    // Set up game
+    resetGameElements();
+    resetScores();
+    resetPhysicsBasedOnDifficulty();
+    updateScoreDisplay();
+    updateLivesDisplay();
+    
+    // Start gameplay
     lastTime = performance.now();
     gameLoop();
+    
+    // Start music if enabled
+    if (!gameState.muted) {
+        backgroundMusic.currentTime = 0;
+        backgroundMusic.play().catch(err => console.error("Error playing background music:", err));
+    }
 }
 
 function restartGame() {
-    initializeGame();
+    console.log("Restart game called");
+    
+    // Cancel any existing animation frame
+    if (gameState.animationFrameId) {
+        cancelAnimationFrame(gameState.animationFrameId);
+        gameState.animationFrameId = null;
+    }
+    
+    // Hide menus
+    gameOverMenu.style.display = "none";
+    pauseMenu.style.display = "none";
+    
+    // Create a new bird
+    gameState.bird = new Bird(window.innerWidth / 4, window.innerHeight / 2, 50, 36);
+    
+    // Reset game state
+    resetGameElements();
+    resetScores();
+    
+    // Reset lives
+    gameState.lives = gameState.maxLives;
+    
+    // Update UI
+    updateScoreDisplay();
+    updateLivesDisplay();
+    
+    // Reset physics and additional state
+    resetPhysicsBasedOnDifficulty();
+    gameState.invincibilityTimer = 0;
+    
+    // Enable buttons
+    settingsButton.disabled = false;
+    featurePanel.style.display = 'flex';
+    
+    // Start game
+    gameState.running = true;
+    gameState.gameOver = false;
+    gameState.paused = false;
+    
+    // Reset the game loop timing
     lastTime = performance.now();
-    gameLoop();
+    
+    // Start a new game loop (no conditions, just start it)
+    gameState.animationFrameId = requestAnimationFrame(gameLoop);
+    
+    // Play music
+    if (!gameState.muted) {
+        backgroundMusic.currentTime = 0;
+        backgroundMusic.play().catch(err => console.error("Error playing background music:", err));
+    }
+    
+    console.log("Game restarted successfully - new game loop initiated");
 }
 
 function showStartMenu() {
@@ -1208,25 +1409,30 @@ function showStartMenu() {
 }
 
 function flap(e) {
-    if (e) e.preventDefault();
-    if (gameState.running && !gameState.paused && !gameState.gameOver && gameState.bird) {
+    if (gameState.gameOver || gameState.paused || gameState.frozen) return;
+    
+    // Allow spacebar or touch/click for flapping
+    if (e.type === "keydown" && e.code !== "Space") return;
+    
+    // Proper handling for touch events
+    if (e.type === "touchstart") {
+        // Check if touch was on a button or menu
+        if (e.target.tagName.toLowerCase() === 'button' ||
+            e.target.closest('.menu-content') !== null ||
+            e.target.closest('#featurePanel') !== null) {
+            return;
+        }
+    }
+    
+    if (gameState.bird) {
         gameState.bird.flap();
-        if (flapSound) {
+        
+        if (flapSound && !gameState.muted) {
             flapSound.currentTime = 0;
-            flapSound.play().catch(() => { });
+            flapSound.play().catch(() => {});
         }
     }
 }
-
-if (canvas) {
-    canvas.addEventListener("mousedown", flap);
-    canvas.addEventListener("touchstart", flap);
-}
-
-window.addEventListener("keydown", (e) => {
-    if (e.code === "Space") flap(e);
-    if (e.code === "Escape" && gameState.running && !gameState.gameOver) togglePause();
-});
 
 function updateGame(dt) {
     if (!gameState.running || gameState.paused || gameState.gameOver || !gameState.bird) return;
@@ -1572,11 +1778,22 @@ function drawGround(ctx, groundColor, textureColor, canvasWidth, canvasHeight, g
 }
 
 function gameOver() {
-    if (!gameState.running) return;
+    console.log("Game over triggered");
+    
+    if (!gameState.running) {
+        console.log("Game over called when game wasn't running - ignoring");
+        return;
+    }
+    
+    // Stop the game
     gameState.running = false;
     gameState.gameOver = true;
+    
+    // Update UI
     settingsButton.disabled = true;
     featurePanel.style.display = 'none';
+    
+    // Stop music
     backgroundMusic.pause();
     
     // Play game over sound
@@ -1585,15 +1802,19 @@ function gameOver() {
         gameOverSound.play().catch(err => console.error("Error playing game over sound:", err));
     }
     
+    // Update score display
     finalScoreDisplay.innerText = `Score: ${gameState.overallScore}`;
     newHighScoreDisplay.style.display = 'none';
     newAllTimeHighScoreDisplay.style.display = 'none';
 
+    // Check for high score
     if (gameState.overallScore > gameState.highScore) {
         gameState.highScore = gameState.overallScore;
         highScoreDisplay.innerText = "High Score: " + gameState.highScore;
         newHighScoreDisplay.style.display = 'block';
     }
+    
+    // Check for all-time high score
     if (gameState.overallScore > gameState.allTimeHighScore) {
         gameState.allTimeHighScore = gameState.overallScore;
         saveAllTimeHighScore(gameState.allTimeHighScore);
@@ -1602,109 +1823,275 @@ function gameOver() {
         newHighScoreDisplay.style.display = 'none';
     }
 
+    // Show game over menu
     gameOverMenu.style.display = "flex";
     pauseMenu.style.display = "none";
+    
+    console.log("Game over complete, showing game over menu");
+    
+    // Rebind all game over menu buttons
+    const gameOverButtons = document.querySelectorAll('#gameOverMenu button');
+    gameOverButtons.forEach((button, index) => {
+        console.log(`Setting up game over button ${index}: ${button.textContent}`);
+        
+        // Remove any existing event listeners
+        const newButton = button.cloneNode(true);
+        button.parentNode.replaceChild(newButton, button);
+        
+        if (index === 0) { // Play Again button
+            newButton.addEventListener('click', function(e) {
+                console.log("Play Again clicked");
+                e.preventDefault();
+                restartGame();
+            });
+            
+            newButton.addEventListener('touchend', function(e) {
+                console.log("Play Again touch ended");
+                e.preventDefault();
+                e.stopPropagation();
+                restartGame();
+            });
+        } else if (index === 1) { // Main Menu button
+            newButton.addEventListener('click', function(e) {
+                console.log("Main Menu clicked");
+                e.preventDefault();
+                showStartMenu();
+            });
+            
+            newButton.addEventListener('touchend', function(e) {
+                console.log("Main Menu touched");
+                e.preventDefault();
+                e.stopPropagation();
+                showStartMenu();
+            });
+        }
+    });
 }
 
 function gameLoop() {
+    // Clear any existing animation frame requests to prevent multiple loops
+    if (gameState.animationFrameId) {
+        cancelAnimationFrame(gameState.animationFrameId);
+        gameState.animationFrameId = null;
+    }
+    
     if (gameState.running) {
         const now = performance.now();
         const dt = Math.min(32, now - lastTime) / 16.67;
         lastTime = now;
         updateGame(dt);
         drawGame();
-        requestAnimationFrame(gameLoop);
+        gameState.animationFrameId = requestAnimationFrame(gameLoop);
+    } else if (gameState.gameOver) {
+        // Even in game over state, we still want to render the final state
+        drawGame();
     }
 }
 
 function checkAssetLoaded() {
     loadedAssets++;
-    if (loadedAssets === totalAssets) {
-        assetsLoaded = true;
-        loadingScreen.style.display = "none";
-        startMenu.style.display = "flex";
-        applySettings();
-        resizeCanvas();
+    console.log(`Asset loaded: ${loadedAssets}/${totalAssets} (${Math.floor(loadedAssets/totalAssets*100)}%)`);
+    
+    if (loadedAssets >= totalAssets) {
+        console.log("All assets loaded successfully!");
+        
+        // Clear any pending timeout
+        if (assetLoadingTimeout) {
+            clearTimeout(assetLoadingTimeout);
+            assetLoadingTimeout = null;
+        }
+        
+        completeAssetLoading();
     }
 }
 
-birdSkins["bird_red.png"] = new Image();
-birdSkins["bird_green.png"] = new Image();
-birdSkins["bird_blue.png"] = new Image();
-backgroundThemes["sky_background.png"] = new Image();
-backgroundThemes["city_background.png"] = new Image();
-backgroundThemes["night_background.png"] = new Image();
-enemyBirdImage = new Image();
+// Separate function to handle successful asset loading completion
+function completeAssetLoading() {
+    if (assetsLoaded) return; // Prevent multiple calls
+    
+    assetsLoaded = true;
+    loadingScreen.style.display = "none";
+    startMenu.style.display = "flex";
+    applySettings();
+    resizeCanvas();
+    
+    // Initialize bird skin and background
+    birdImage = birdSkins[currentBirdSkin];
+    backgroundImage = backgroundThemes[currentBackgroundTheme];
+    
+    console.log("Game initialized and ready to play!");
+}
 
-// Add jetpack image to assets
-let jetpackImage = new Image();
+// Function to load assets with retry capability
+function loadAssets() {
+    // This function should only initialize asset loading if not already loaded
+    if (assetsLoaded) {
+        console.log("Assets already loaded, skipping loadAssets()");
+        return;
+    }
+    
+    loadingAttempts++;
+    console.log(`Starting asset loading process... (Attempt ${loadingAttempts}/${MAX_LOADING_ATTEMPTS})`);
+    
+    // Reset counters for a fresh start
+    loadedAssets = 0;
+    
+    // Cancel any existing timeout
+    if (assetLoadingTimeout) {
+        clearTimeout(assetLoadingTimeout);
+    }
+    
+    // Set up image assets
+    assets.forEach((asset) => {
+        if (asset.image) {
+            console.log(`Loading image asset: ${asset.src}`);
+            
+            // Create fresh event handlers
+            asset.image.onload = null;
+            asset.image.onerror = null;
+            
+            asset.image.onload = function() {
+                console.log(`Successfully loaded image: ${asset.src}`);
+                checkAssetLoaded();
+            };
+            
+            asset.image.onerror = function() {
+                console.error(`Failed to load image: ${asset.src}`);
+                
+                // Retry with a different approach if available
+                if (asset.fallbackSrc && asset.src !== asset.fallbackSrc) {
+                    console.log(`Trying fallback for ${asset.src}: ${asset.fallbackSrc}`);
+                    asset.image.src = asset.fallbackSrc;
+                } else {
+                    // Count as loaded even on error to avoid getting stuck
+                    checkAssetLoaded();
+                }
+            };
+            
+            // Set the source last to trigger loading
+            asset.image.src = asset.src + "?t=" + new Date().getTime(); // Cache busting
+        }
+    });
+    
+    // Set up audio assets
+    setupAudioAssets();
+    
+    // Set a fallback timeout in case some assets never load
+    assetLoadingTimeout = setTimeout(function() {
+        if (!assetsLoaded) {
+            console.warn(`Asset loading timeout reached after ${loadingAttempts} attempts - forcing game to start`);
+            console.log(`Loaded ${loadedAssets}/${totalAssets} assets before timeout`);
+            
+            if (loadingAttempts < MAX_LOADING_ATTEMPTS) {
+                console.log("Retrying asset loading...");
+                loadAssets(); // Try again
+            } else {
+                console.warn("Maximum loading attempts reached, proceeding with partial assets");
+                completeAssetLoading();
+            }
+        }
+    }, 8000); // 8 second timeout
+}
 
-const assets = [
-    { image: birdSkins["bird_red.png"], src: "bird_red.png" },
-    { image: birdSkins["bird_green.png"], src: "bird_green.png" },
-    { image: birdSkins["bird_blue.png"], src: "bird_blue.png" },
-    { image: backgroundThemes["sky_background.png"], src: "sky_background.png" },
-    { image: backgroundThemes["city_background.png"], src: "city_background.png" },
-    { image: backgroundThemes["night_background.png"], src: "night_background.png" },
-    { image: enemyBirdImage, src: "enemy_bird.png" },
-    { image: jetpackImage, src: "jetpack.png" }  // Add jetpack image to assets
-];
-
-assets.forEach((asset) => {
-    if (asset.image) {
-        asset.image.src = asset.src;
-        asset.image.onload = checkAssetLoaded;
-        asset.image.onerror = () => {
-            console.error("Failed to load image:", asset.src);
+// Separate function for audio asset setup
+function setupAudioAssets() {
+    console.log("Setting up audio asset loading...");
+    
+    // Function to handle audio loading for each audio element
+    function setupAudioLoading(audioElement, name) {
+        if (!audioElement) {
+            console.error(`Audio element for ${name} not found!`);
+            checkAssetLoaded(); // Count as loaded to avoid getting stuck
+            return;
+        }
+        
+        // Remove any existing event listeners to prevent duplicates
+        audioElement.removeEventListener("canplaythrough", audioElement._loadHandler);
+        
+        // Create and store the load handler function
+        audioElement._loadHandler = function() {
+            console.log(`${name} loaded`);
+            audioElement.removeEventListener("canplaythrough", audioElement._loadHandler);
             checkAssetLoaded();
         };
+        
+        // Add the event listener
+        audioElement.addEventListener("canplaythrough", audioElement._loadHandler);
+        
+        // Add error handler
+        audioElement.addEventListener("error", function(e) {
+            console.error(`Failed to load ${name}:`, e.message || "Unknown error");
+            checkAssetLoaded(); // Count as loaded even on error
+        }, { once: true });
+        
+        // Check if audio is already loaded (for cached audio)
+        if (audioElement.readyState >= 4) {
+            console.log(`${name} already loaded (cached)`);
+            checkAssetLoaded();
+            return;
+        }
+        
+        // Force reload by setting the source again
+        const currentSrc = audioElement.getAttribute("src");
+        if (currentSrc) {
+            audioElement.src = currentSrc + "?t=" + new Date().getTime(); // Cache busting
+        } else {
+            console.warn(`${name} src attribute missing, using default`);
+            audioElement.src = `${name.toLowerCase().replace(/\s/g, "_")}.mp3`;
+        }
+        
+        // Try to load it
+        audioElement.load();
     }
-});
-
-flapSound.addEventListener("canplaythrough", () => {});
-coinSound.addEventListener("canplaythrough", () => {});
-flapSound.addEventListener("error", () => console.error("Failed to load flap audio"));
-coinSound.addEventListener("error", () => console.error("Failed to load coin audio"));
-backgroundMusic.addEventListener("canplaythrough", checkAssetLoaded);
-backgroundMusic.addEventListener("error", () => {
-    console.error("Failed to load audio:", "background_music.mp3");
-    checkAssetLoaded();
-});
-backgroundMusic.preload = "auto";
-backgroundMusic.src = "background_music.mp3";
-
+    
+    // Setup all audio elements
+    setupAudioLoading(flapSound, "Flap sound");
+    setupAudioLoading(coinSound, "Coin sound");
+    setupAudioLoading(backgroundMusic, "Background music");
+    setupAudioLoading(crashSound, "Crash sound");
+    setupAudioLoading(gameOverSound, "Game over sound");
+    setupAudioLoading(jetpackSound, "Jetpack sound");
+    setupAudioLoading(yaySound, "Yay sound");
+}
 
 function showSettingsMenu() {
-    gameState.running = false;
-    const wasPaused = gameState.paused;
-    gameState.paused = true;
-    pauseButton.textContent = "Resume";
-    settingsButton.disabled = true;
-    featurePanel.style.display = 'flex';
     settingsMenu.style.display = "flex";
-    startMenu.style.display = "none";
-    gameOverMenu.style.display = "none";
-    pauseMenu.style.display = "none";
-    settingsMenu.dataset.returnToPause = wasPaused ? "true" : "false";
-    backgroundMusic.pause();
+    
+    // On mobile, ensure the menu is scrollable and fully visible
+    if (isMobileDevice()) {
+        const menuContent = document.getElementById('settingsMenuContent');
+        if (menuContent) {
+            menuContent.scrollTop = 0;
+        }
+    }
+    
+    if (gameState.running && !gameState.gameOver) {
+        gameState.paused = true;
+        backgroundMusic.pause();
+    }
 }
 
 function hideSettingsMenu() {
     settingsMenu.style.display = "none";
-    settingsButton.disabled = false;
-    featurePanel.style.display = 'flex';
-    const returnToPause = settingsMenu.dataset.returnToPause === "true";
-    if (returnToPause) {
-        gameState.running = false;
-        pauseMenu.style.display = "flex";
-    } else if (gameState.gameOver) {
-        gameOverMenu.style.display = "flex";
-    } else {
-        gameState.paused = false;
-        gameState.running = true;
-        lastTime = performance.now();
-        gameLoop();
-        if (isMusicPlaying) backgroundMusic.play().catch(() => { });
+    
+    if (gameState.running && !gameState.gameOver) {
+        if (pauseMenu.style.display === "flex") {
+            // If pause menu was open, keep the game paused
+            gameState.paused = true;
+        } else {
+            gameState.paused = false;
+            if (!gameState.muted) {
+                backgroundMusic.play().catch(() => {});
+            }
+            featurePanel.style.display = 'flex';
+        }
+    } else if (!gameState.running) {
+        startMenu.style.display = "flex";
+    }
+    
+    // Force a redraw when hiding settings on mobile
+    if (isMobileDevice()) {
+        drawGame();
     }
 }
 
@@ -1747,22 +2134,25 @@ function changePipeSkin(skin) {
 }
 
 function togglePause() {
-    if (!gameState.running && !gameState.paused) return;
+    if (gameState.gameOver) return;
+    
     gameState.paused = !gameState.paused;
-    settingsButton.disabled = gameState.paused;
-    featurePanel.style.display = gameState.paused ? 'flex' : 'none';
+    
     if (gameState.paused) {
-        gameState.running = false;
-        pauseMenu.style.display = "flex";
-        pauseButton.textContent = "Resume";
         backgroundMusic.pause();
+        pauseMenu.style.display = "flex";
+        featurePanel.style.display = 'none';
     } else {
-        gameState.running = true;
+        if (!gameState.muted) {
+            backgroundMusic.play().catch(() => {});
+        }
         pauseMenu.style.display = "none";
-        pauseButton.textContent = "Pause";
-        lastTime = performance.now();
-        gameLoop();
-        if (isMusicPlaying) backgroundMusic.play().catch(() => { });
+        featurePanel.style.display = 'flex';
+    }
+    
+    // Force a redraw when toggling pause on mobile
+    if (isMobileDevice()) {
+        drawGame();
     }
 }
 
@@ -2480,3 +2870,101 @@ crashSound.addEventListener("error", () => console.error("Failed to load crash a
 gameOverSound.addEventListener("error", () => console.error("Failed to load game over audio"));
 jetpackSound.addEventListener("error", () => console.error("Failed to load jetpack audio"));
 yaySound.addEventListener("error", () => console.error("Failed to load yay audio"));
+
+// Function to check if images are already cached in browser
+function checkForCachedAssets() {
+    let cachedAssets = 0;
+    
+    // Check for cached images by seeing if they load immediately
+    assets.forEach(asset => {
+        if (asset.image.complete) {
+            console.log(`Image ${asset.src} appears to be cached`);
+            cachedAssets++;
+        }
+    });
+    
+    // Check for cached audio
+    const audioElements = [flapSound, coinSound, backgroundMusic, crashSound, gameOverSound, jetpackSound, yaySound];
+    audioElements.forEach(audio => {
+        if (audio && audio.readyState >= 4) {
+            console.log(`Audio ${audio.src} appears to be cached`);
+            cachedAssets++;
+        }
+    });
+    
+    console.log(`Found ${cachedAssets} out of ${assets.length + audioElements.length} assets that may be cached`);
+    
+    // If most assets are already cached, we might be able to skip the loading screen
+    if (cachedAssets > (assets.length + audioElements.length) * 0.8) {
+        console.log("Most assets appear to be cached, attempting quick startup");
+        setTimeout(() => {
+            if (!assetsLoaded && loadedAssets < totalAssets) {
+                console.log("Forcing asset loading completion due to high cache rate");
+                completeAssetLoading();
+            }
+        }, 1000);
+    }
+}
+
+// Ensure the game is initialized when the document is ready
+document.addEventListener("DOMContentLoaded", function() {
+    console.log("Document ready, initializing game...");
+    
+    // Check if loading screen is visible
+    const loadingScreenVisible = loadingScreen.style.display !== "none";
+    console.log("Loading screen visible:", loadingScreenVisible);
+    
+    // Check if we already have assets loaded
+    console.log("Assets loaded status:", assetsLoaded);
+    console.log(`Current asset count: ${loadedAssets}/${totalAssets}`);
+    
+    // Check for cached assets first - may allow for a quicker startup
+    checkForCachedAssets();
+    
+    // Initialize the game - this will start asset loading
+    initializeGame();
+    
+    // Set a backup trigger in case DOM content loaded fires after assets are already loaded
+    setTimeout(function() {
+        if (loadingScreen.style.display !== "none" && assetsLoaded) {
+            console.log("Assets were loaded but loading screen still showing - fixing display");
+            loadingScreen.style.display = "none";
+            startMenu.style.display = "flex";
+        }
+        
+        // Double-check that initialization has occurred
+        if (loadedAssets === 0) {
+            console.warn("No assets loaded yet - triggering manual initialization");
+            loadAssets();
+        }
+    }, 2000);
+});
+
+// Track loading attempts to prevent infinite retries
+let loadingAttempts = 0;
+const MAX_LOADING_ATTEMPTS = 3;
+
+// Keep track of asset loading timeout
+let assetLoadingTimeout = null;
+
+// Initialize image assets
+birdSkins["bird_red.png"] = new Image();
+birdSkins["bird_green.png"] = new Image();
+birdSkins["bird_blue.png"] = new Image();
+backgroundThemes["sky_background.png"] = new Image();
+backgroundThemes["city_background.png"] = new Image();
+backgroundThemes["night_background.png"] = new Image();
+enemyBirdImage = new Image();
+let jetpackImage = new Image();
+
+// Define the assets to load
+const assets = [
+    { image: birdSkins["bird_red.png"], src: "bird_red.png" },
+    { image: birdSkins["bird_green.png"], src: "bird_green.png" },
+    { image: birdSkins["bird_blue.png"], src: "bird_blue.png" },
+    { image: backgroundThemes["sky_background.png"], src: "sky_background.png" },
+    { image: backgroundThemes["city_background.png"], src: "city_background.png" },
+    { image: backgroundThemes["night_background.png"], src: "night_background.png" },
+    { image: enemyBirdImage, src: "enemy_bird.png" },
+    { image: jetpackImage, src: "jetpack.png" }
+];
